@@ -1,0 +1,20 @@
+services:
+  jmcomic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jmcomic-fastapi:local
+    environment:
+      REMOTEAPI_API_KEY: ${REMOTEAPI_API_KEY:-}
+      REMOTEAPI_API_HEADER: ${REMOTEAPI_API_HEADER:-X-Api-Key}
+      JMCOMIC_DISABLE_LOG: ${JMCOMIC_DISABLE_LOG:-true}
+      JMCOMIC_DOMAIN_LIST: ${JMCOMIC_DOMAIN_LIST:-}
+      JMCOMIC_IMAGE_DOMAIN: ${JMCOMIC_IMAGE_DOMAIN:-}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import http.client; conn=http.client.HTTPConnection('127.0.0.1', 8000, timeout=3); conn.request('GET', '/v1/capabilities'); resp=conn.getresponse(); raise SystemExit(0 if resp.status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

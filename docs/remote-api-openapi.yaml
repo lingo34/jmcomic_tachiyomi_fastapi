@@ -1,0 +1,284 @@
+openapi: 3.0.3
+info:
+  title: Remote API for Keiyoushi/Tachiyomi extension
+  version: 0.1.0
+  description: |
+    Minimal JSON API consumed by the Remote API Kotlin extension. Servers can disable
+    capabilities and respond with **501 Not Implemented** for unsupported features.
+servers:
+  - url: http://10.0.2.2:8000
+    description: Android emulator loopback
+  - url: http://localhost:8000
+    description: Localhost
+security:
+  - ApiKeyAuth: []
+paths:
+  /v1/capabilities:
+    get:
+      summary: Describe server capabilities and filter definitions
+      operationId: getCapabilities
+      responses:
+        '200':
+          description: Capability description
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+  /v1/manga/popular:
+    get:
+      summary: Paginated popular/browse list
+      operationId: popularManga
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, minimum: 1, maximum: 200, default: 40 }
+      responses:
+        '200':
+          description: Popular manga page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagedManga'
+        '501': { description: Popular listing disabled }
+  /v1/manga/latest:
+    get:
+      summary: Paginated latest list
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, minimum: 1, maximum: 200, default: 40 }
+      responses:
+        '200':
+          description: Latest page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagedManga'
+        '501': { description: Latest disabled }
+  /v1/manga/search:
+    get:
+      summary: Search manga with optional filters
+      parameters:
+        - in: query
+          name: query
+          schema: { type: string }
+          description: Free text query
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, minimum: 1, maximum: 200, default: 40 }
+        - in: query
+          name: filter.genre
+          schema: { type: string }
+        - in: query
+          name: filter.tag
+          schema: { type: string }
+        - in: query
+          name: filter.nsfw
+          schema: { type: string, enum: ["true","false"] }
+        - in: query
+          name: sort
+          schema: { type: string, enum: [updated, title] }
+        - in: query
+          name: order
+          schema: { type: string, enum: [asc, desc] }
+      responses:
+        '200':
+          description: Search result page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagedManga'
+        '501': { description: Search disabled }
+  /v1/manga/{manga_id}:
+    get:
+      summary: Get manga details and optional chapter list
+      parameters:
+        - in: path
+          name: manga_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Manga details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MangaEnvelope'
+        '404': { description: Manga not found }
+  /v1/manga/{manga_id}/chapters:
+    get:
+      summary: List chapters for a manga
+      parameters:
+        - in: path
+          name: manga_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, minimum: 1, maximum: 200, default: 40 }
+      responses:
+        '200':
+          description: Chapters page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagedChapter'
+        '404': { description: Manga not found }
+        '501': { description: Chapter listing disabled }
+  /v1/chapters/{chapter_id}/pages:
+    get:
+      summary: Page list for a chapter
+      parameters:
+        - in: path
+          name: chapter_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Page list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PageListResponse'
+        '404': { description: Chapter not found }
+        '501': { description: Page listing disabled }
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+  schemas:
+    SupportFlags:
+      type: object
+      properties:
+        popular: { type: boolean, default: true }
+        latest: { type: boolean, default: false }
+        search: { type: boolean, default: true }
+        manga_details: { type: boolean, default: true }
+        chapters: { type: boolean, default: true }
+        pages: { type: boolean, default: true }
+    DefaultValues:
+      type: object
+      properties:
+        page_size: { type: integer, minimum: 1, maximum: 200 }
+    AuthSpec:
+      type: object
+      properties:
+        header: { type: string, example: X-Api-Key }
+        type: { type: string, example: apiKey }
+        scheme: { type: string, example: plain }
+    FilterOption:
+      type: object
+      properties:
+        value: { type: string }
+        label: { type: string }
+      required: [value, label]
+    FilterDefinition:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        type: { type: string, enum: [text, checkbox, select, sort] }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/FilterOption' }
+        default: { type: string }
+        section: { type: string }
+      required: [key, label, type]
+    CapabilitiesResponse:
+      type: object
+      properties:
+        name: { type: string }
+        version: { type: string }
+        supports: { $ref: '#/components/schemas/SupportFlags' }
+        filters:
+          type: array
+          items: { $ref: '#/components/schemas/FilterDefinition' }
+        auth: { $ref: '#/components/schemas/AuthSpec' }
+        defaults: { $ref: '#/components/schemas/DefaultValues' }
+      required: [name, version, supports]
+    RemoteManga:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        alt_titles: { type: array, items: { type: string } }
+        url: { type: string, nullable: true }
+        thumbnail: { type: string, format: uri, nullable: true }
+        description: { type: string, nullable: true }
+        author: { type: string, nullable: true }
+        artist: { type: string, nullable: true }
+        status: { type: string, nullable: true, enum: [ongoing, completed, hiatus, cancelled, canceled] }
+        tags: { type: array, items: { type: string } }
+        lang: { type: string, nullable: true }
+        nsfw: { type: boolean, nullable: true }
+      required: [id, title]
+    RemoteChapter:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        url: { type: string, nullable: true }
+        number: { type: number, format: float, nullable: true }
+        volume: { type: string, nullable: true }
+        scanlator: { type: string, nullable: true }
+        uploaded: { type: integer, format: int64, nullable: true, description: Unix epoch ms }
+      required: [id, name]
+    RemotePage:
+      type: object
+      properties:
+        index: { type: integer, minimum: 0, nullable: true }
+        image_url: { type: string, format: uri }
+        page_url: { type: string, format: uri, nullable: true }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          nullable: true
+      required: [image_url]
+    MangaEnvelope:
+      type: object
+      properties:
+        manga: { $ref: '#/components/schemas/RemoteManga' }
+        chapters:
+          type: array
+          items: { $ref: '#/components/schemas/RemoteChapter' }
+          nullable: true
+      required: [manga]
+    PagedManga:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RemoteManga' }
+        has_next: { type: boolean }
+        total: { type: integer, nullable: true }
+      required: [items, has_next]
+    PagedChapter:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RemoteChapter' }
+        has_next: { type: boolean }
+        total: { type: integer, nullable: true }
+      required: [items, has_next]
+    PageListResponse:
+      type: object
+      properties:
+        pages:
+          type: array
+          items: { $ref: '#/components/schemas/RemotePage' }
+      required: [pages]
