@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.124.0",
     "uvicorn[standard]>=0.38.0",
-    "jmcomic>=2.6.10",
+    "jmcomic>=2.6.17",
 ]
 
 [project.optional-dependencies]
