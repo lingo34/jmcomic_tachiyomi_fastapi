@@ -1,12 +1,79 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from threading import Lock
+from typing import cast
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from jmcomic import JmcomicException
+from pydantic import HttpUrl
 
 import main
+
+
+class FakeSearchPage:
+    def __init__(
+        self,
+        content: list[tuple[str, dict[str, object]]],
+        *,
+        page_size: int = 80,
+        total: int | None = None,
+    ) -> None:
+        self.content = content
+        self.page_size = page_size
+        self.total = len(content) if total is None else total
+
+
+class SearchClient:
+    def __init__(
+        self,
+        *,
+        result: FakeSearchPage | None = None,
+        exc: Exception | None = None,
+    ) -> None:
+        self.result = result
+        self.exc = exc
+        self.calls: list[dict[str, object]] = []
+
+    def search_site(
+        self,
+        *,
+        search_query: str,
+        page: int,
+        order_by: str,
+        time: str,
+        category: str,
+    ) -> FakeSearchPage:
+        self.calls.append(
+            {
+                "search_query": search_query,
+                "page": page,
+                "order_by": order_by,
+                "time": time,
+                "category": category,
+            }
+        )
+        if self.exc is not None:
+            raise self.exc
+        assert self.result is not None
+        return self.result
+
+
+class RefreshingService(main.JmcomicService):
+    def __init__(self, clients: list[SearchClient]) -> None:
+        self.impl = "api"
+        self.domain_list = None
+        self._client_lock = Lock()
+        self._clients = clients
+        self._client_index = 0
+        self._client = self._clients[0]
+
+    def _create_client(self) -> SearchClient:
+        if self._client_index + 1 < len(self._clients):
+            self._client_index += 1
+        return self._clients[self._client_index]
 
 
 class FakeService:
@@ -14,8 +81,8 @@ class FakeService:
         self.manga_item = main.RemoteManga(
             id="demo",
             title="Demo Manga",
-            url="https://example.test/album/demo",
-            thumbnail="https://example.test/media/demo.jpg",
+            url=cast(HttpUrl, "https://example.test/album/demo"),
+            thumbnail=cast(HttpUrl, "https://example.test/media/demo.jpg"),
             author="Tester",
             tags=["demo"],
             nsfw=True,
@@ -27,8 +94,8 @@ class FakeService:
         ]
         self.pages = main.PageListResponse(
             pages=[
-                main.RemotePage(index=0, image_url="https://example.test/p0.jpg"),
-                main.RemotePage(index=1, image_url="https://example.test/p1.jpg"),
+                main.RemotePage(index=0, image_url=cast(HttpUrl, "https://example.test/p0.jpg")),
+                main.RemotePage(index=1, image_url=cast(HttpUrl, "https://example.test/p1.jpg")),
             ]
         )
 
@@ -67,7 +134,7 @@ class FakeService:
             total=len(self.chapters_list),
         )
 
-    def list_pages(self, chapter_id: str, _request=None) -> main.PageListResponse:
+    def list_pages(self, chapter_id: str, _request: object | None = None) -> main.PageListResponse:
         if chapter_id not in {ch.id for ch in self.chapters_list}:
             raise HTTPException(status_code=404, detail="Chapter not found")
         return self.pages
@@ -137,3 +204,54 @@ def test_unknown_manga_returns_404(client: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Manga not found"
+
+
+def test_search_refreshes_client_after_jmcomic_error() -> None:
+    stale_client = SearchClient(exc=cast(Exception, JmcomicException("stale domain", {})))
+    refreshed_client = SearchClient(
+        result=FakeSearchPage(
+            [
+                ("1", {"name": "First"}),
+                ("2", {"name": "Second"}),
+            ],
+            total=2,
+        )
+    )
+    service = RefreshingService([stale_client, refreshed_client])
+
+    result = service.search(
+        query="demo",
+        page=1,
+        page_size=2,
+        category=None,
+        time=None,
+        sort="view:asc",
+        order=None,
+        tag=None,
+    )
+
+    assert [manga.id for manga in result.items] == ["2", "1"]
+    assert len(stale_client.calls) == 1
+    assert len(refreshed_client.calls) == 1
+    assert refreshed_client.calls[0]["order_by"] == service._sort_to_order_by("view")
+
+
+def test_search_returns_502_after_retry_exhausted() -> None:
+    first_client = SearchClient(exc=cast(Exception, JmcomicException("first failure", {})))
+    second_client = SearchClient(exc=cast(Exception, JmcomicException("second failure", {})))
+    service = RefreshingService([first_client, second_client])
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.search(
+            query="demo",
+            page=1,
+            page_size=5,
+            category=None,
+            time=None,
+            sort=None,
+            order=None,
+            tag=None,
+        )
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "second failure"

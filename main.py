@@ -6,31 +6,32 @@ API (mobile) mode.
 """
 from __future__ import annotations
 
+import math
 import os
+from collections.abc import Callable, Iterable, Sequence
 from functools import lru_cache
 from io import BytesIO
-import math
-from typing import Any, Callable, Iterable, Sequence, cast
+from threading import Lock
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, HttpUrl
-
 from jmcomic import (
     JmAlbumDetail,
+    JmcomicException,
+    JmcomicText,
     JmImageDetail,
     JmImageTool,
     JmMagicConstants,
     JmOption,
     JmPhotoDetail,
     JmSearchPage,
-    JmcomicException,
-    JmcomicText,
     MissingAlbumPhotoException,
     disable_jm_log,
 )
 from PIL import Image
+from pydantic import BaseModel, Field, HttpUrl
 
 app = FastAPI(title="JMComic Remote API", version="0.1.0")
 
@@ -241,38 +242,67 @@ class JmcomicService:
 
     def __init__(self, impl: str = "api", domain_list: Sequence[str] | None = None):
         self.impl = impl
-        self.domain_list = [d for d in domain_list] if domain_list else None
+        self.domain_list = list(domain_list) if domain_list else None
+        self._client_lock = Lock()
+        self._client = self._create_client()
+
+    def _create_client(self) -> Any:
         if _logs_disabled():
             disable_jm_log()
-        self._client = JmOption.default().new_jm_client(impl=self.impl, domain_list=self.domain_list)
+        return JmOption.default().new_jm_client(impl=self.impl, domain_list=self.domain_list)
+
+    def _refresh_client(self) -> Any:
+        with self._client_lock:
+            self._client = self._create_client()
+            return self._client
+
+    def _call_with_client_retry(
+        self,
+        operation: Callable[[Any], Any],
+        *,
+        missing_detail: str | None = None,
+    ) -> Any:
+        last_exc: JmcomicException | None = None
+        for attempt in range(2):
+            client = self._client if attempt == 0 else self._refresh_client()
+            try:
+                return operation(client)
+            except MissingAlbumPhotoException as exc:
+                if missing_detail is None:
+                    raise
+                raise HTTPException(status_code=404, detail=missing_detail) from exc
+            except JmcomicException as exc:
+                last_exc = exc
+
+        if last_exc is None:  # pragma: no cover - defensive guard
+            raise HTTPException(status_code=502, detail="Unknown jmcomic client error")
+        raise HTTPException(status_code=502, detail=str(last_exc)) from last_exc
 
     # --------------------------- list endpoints ---------------------------
     def list_popular(self, page: int, page_size: int) -> PagedManga:
         def fetch(page_index: int) -> JmSearchPage:
-            return cast(
-                JmSearchPage,
-                self._client.categories_filter(
+            return cast(JmSearchPage, self._call_with_client_retry(
+                lambda client: client.categories_filter(
                     page=page_index,
                     time=JmMagicConstants.TIME_WEEK,
                     category=JmMagicConstants.CATEGORY_ALL,
                     order_by=JmMagicConstants.ORDER_WEEK_RANKING,
                 ),
-            )
+            ))
 
         return self._search_to_paged_manga(fetch, page, page_size)
 
     def list_latest(self, page: int, page_size: int) -> PagedManga:
         def fetch(page_index: int) -> JmSearchPage:
-            return cast(
-                JmSearchPage,
-                self._client.search_site(
+            return cast(JmSearchPage, self._call_with_client_retry(
+                lambda client: client.search_site(
                     search_query="",
                     page=page_index,
                     order_by=JmMagicConstants.ORDER_BY_LATEST,
                     time=JmMagicConstants.TIME_TODAY,
                     category=JmMagicConstants.CATEGORY_ALL,
                 ),
-            )
+            ))
 
         return self._search_to_paged_manga(fetch, page, page_size)
 
@@ -287,50 +317,49 @@ class JmcomicService:
         order: str | None,
         tag: str | None,
     ) -> PagedManga:
+        sort, order = self._normalize_sort_order(sort, order)
         order_by = self._sort_to_order_by(sort)
         time_code = time or JmMagicConstants.TIME_ALL
         category_code = category or JmMagicConstants.CATEGORY_ALL
 
         def fetch(page_index: int) -> JmSearchPage:
-            try:
-                if tag and not query:
-                    return cast(JmSearchPage, self._client.search_tag(tag, page=page_index))
-                return cast(
-                    JmSearchPage,
-                    self._client.search_site(
+            if tag and not query:
+                return cast(JmSearchPage, self._call_with_client_retry(
+                    lambda client: client.search_tag(tag, page=page_index),
+                ))
+            return cast(JmSearchPage, self._call_with_client_retry(
+                lambda client: client.search_site(
                         search_query=query or "",
                         page=page_index,
                         order_by=order_by,
                         time=time_code,
                         category=category_code,
                     ),
-                )
-            except JmcomicException as exc:  # allow HTTPException wrapping below
-                raise exc
+            ))
 
         reverse = order == "asc"
         return self._search_to_paged_manga(fetch, page, page_size, reverse=reverse)
 
     # --------------------------- details endpoints ---------------------------
     def manga(self, manga_id: str) -> MangaEnvelope:
-        try:
-            album = cast(JmAlbumDetail, self._client.get_album_detail(manga_id))
-        except MissingAlbumPhotoException as exc:
-            raise HTTPException(status_code=404, detail="Manga not found") from exc
-        except JmcomicException as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-
+        album = cast(
+            JmAlbumDetail,
+            self._call_with_client_retry(
+                lambda client: client.get_album_detail(manga_id),
+                missing_detail="Manga not found",
+            ),
+        )
         chapters = [self._photo_to_remote_chapter(photo) for photo in album]
         return MangaEnvelope(manga=self._album_to_remote(album), chapters=chapters)
 
     def list_chapters(self, manga_id: str, page: int, page_size: int) -> PagedChapter:
-        try:
-            album = cast(JmAlbumDetail, self._client.get_album_detail(manga_id))
-        except MissingAlbumPhotoException as exc:
-            raise HTTPException(status_code=404, detail="Manga not found") from exc
-        except JmcomicException as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-
+        album = cast(
+            JmAlbumDetail,
+            self._call_with_client_retry(
+                lambda client: client.get_album_detail(manga_id),
+                missing_detail="Manga not found",
+            ),
+        )
         all_photos = list(cast(Iterable[JmPhotoDetail], album))
         start = (page - 1) * page_size
         end = start + page_size
@@ -342,13 +371,13 @@ class JmcomicService:
         return PagedChapter(items=chapters, has_next=end < len(all_photos), total=len(all_photos))
 
     def list_pages(self, chapter_id: str, request: Request | None = None) -> PageListResponse:
-        try:
-            photo_detail = cast(JmPhotoDetail, self._client.get_photo_detail(chapter_id))
-        except MissingAlbumPhotoException as exc:
-            raise HTTPException(status_code=404, detail="Chapter not found") from exc
-        except JmcomicException as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-
+        photo_detail = cast(
+            JmPhotoDetail,
+            self._call_with_client_retry(
+                lambda client: client.get_photo_detail(chapter_id),
+                missing_detail="Chapter not found",
+            ),
+        )
         pages: list[RemotePage] = []
         album_id = getattr(photo_detail, "album_id", getattr(photo_detail, "aid", None))
         base_url = str(request.base_url).rstrip("/") if request is not None else None
@@ -374,27 +403,23 @@ class JmcomicService:
         if page_index < 0:
             raise HTTPException(status_code=400, detail="page_index must be non-negative")
 
-        try:
-            photo_detail = cast(JmPhotoDetail, self._client.get_photo_detail(chapter_id))
-        except MissingAlbumPhotoException as exc:
-            raise HTTPException(status_code=404, detail="Chapter not found") from exc
-        except JmcomicException as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        def fetch_image(client: Any) -> tuple[bytes, str]:
+            photo_detail = cast(JmPhotoDetail, client.get_photo_detail(chapter_id))
+            images = list(cast(Iterable[JmImageDetail], photo_detail))
+            if page_index >= len(images):
+                raise HTTPException(status_code=404, detail="Page not found")
 
-        images = list(cast(Iterable[JmImageDetail], photo_detail))
-        if page_index >= len(images):
-            raise HTTPException(status_code=404, detail="Page not found")
-
-        image = images[page_index]
-        try:
-            resp = self._client.get_jm_image(image.download_url)
+            image = images[page_index]
+            resp = client.get_jm_image(image.download_url)
             resp.require_success()
-        except JmcomicException as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        decode_needed = not self._client.img_is_not_need_to_decode(image.download_url, resp)
-        content, media_type = self._decode_image_resp(resp, image, decode_image=decode_needed)
-        return content, media_type
+            decode_needed = not client.img_is_not_need_to_decode(image.download_url, resp)
+            return self._decode_image_resp(resp, image, decode_image=decode_needed)
+
+        return cast(
+            tuple[bytes, str],
+            self._call_with_client_retry(fetch_image, missing_detail="Chapter not found"),
+        )
 
     # --------------------------- internal helpers ---------------------------
     def _search_to_paged_manga(
@@ -518,7 +543,20 @@ class JmcomicService:
             "likes": JmMagicConstants.ORDER_BY_LIKE,
             "pictures": JmMagicConstants.ORDER_BY_PICTURE,
         }
-        return mapping.get((sort or "").lower(), JmMagicConstants.ORDER_BY_LATEST)
+        return cast(str, mapping.get((sort or "").lower(), JmMagicConstants.ORDER_BY_LATEST))
+
+    @staticmethod
+    def _normalize_sort_order(sort: str | None, order: str | None) -> tuple[str | None, str | None]:
+        normalized_sort = (sort or "").strip()
+        normalized_order = (order or "").strip().lower() or None
+
+        if ":" in normalized_sort:
+            sort_name, sort_order = normalized_sort.split(":", 1)
+            normalized_sort = sort_name.strip()
+            if normalized_order is None and sort_order.strip():
+                normalized_order = sort_order.strip().lower()
+
+        return normalized_sort or None, normalized_order
 
     def _image_headers(self, download_url: str, album_id: str | None) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -731,7 +769,7 @@ async def page_image(
     page_index: int = Path(..., ge=0),
     _api_key_check: None = Depends(require_api_key),
     service: JmcomicService = Depends(get_service),
-):
+) -> Response:
     ensure("pages")
     content, media_type = service.page_image(chapter_id, page_index)
     return Response(content=content, media_type=media_type)
