@@ -5,16 +5,56 @@ services:
       dockerfile: Dockerfile
     image: jmcomic-fastapi:local
     environment:
+      # --- Auth ---
       REMOTEAPI_API_KEY: ${REMOTEAPI_API_KEY:-}
       REMOTEAPI_API_HEADER: ${REMOTEAPI_API_HEADER:-X-Api-Key}
+      # --- jmcomic client ---
       JMCOMIC_DISABLE_LOG: ${JMCOMIC_DISABLE_LOG:-true}
       JMCOMIC_DOMAIN_LIST: ${JMCOMIC_DOMAIN_LIST:-}
       JMCOMIC_IMAGE_DOMAIN: ${JMCOMIC_IMAGE_DOMAIN:-}
+      JMCOMIC_HTML_DOMAIN: ${JMCOMIC_HTML_DOMAIN:-18comic.vip}
+      # --- HTTP / security ---
+      APP_DOCS_ENABLED: ${APP_DOCS_ENABLED:-false}
+      APP_ALLOWED_HOSTS: ${APP_ALLOWED_HOSTS:-*}
+      APP_CORS_ALLOW_ORIGINS: ${APP_CORS_ALLOW_ORIGINS:-}
+      APP_FORWARDED_ALLOW_IPS: ${APP_FORWARDED_ALLOW_IPS:-*}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      # NOTE: access logging is hard-disabled in code and cannot be enabled.
+      # --- Resource limits (256 MB host) ---
+      APP_MAX_IMAGE_PIXELS: ${APP_MAX_IMAGE_PIXELS:-20000000}
+      APP_MAX_CONCURRENT_IMAGES: ${APP_MAX_CONCURRENT_IMAGES:-2}
     ports:
       - "8000:8000"
     restart: unless-stopped
+    # Run with tini as PID 1 for proper signal forwarding / zombie reaping.
+    init: true
+    # --- Container hardening ---
+    read_only: true
+    tmpfs:
+      # All writable state lives in RAM and is wiped on restart — nothing persists.
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # --- Memory budget (target host allocates 256 MB) ---
+    mem_limit: 256m
+    mem_reservation: 192m
+    memswap_limit: 256m  # disallow swap so the limit is a hard ceiling
+    pids_limit: 256
+    # Minimal, bounded, ephemeral logging. For zero on-disk logs use `driver: none`.
+    logging:
+      driver: json-file
+      options:
+        max-size: "512k"
+        max-file: "1"
     healthcheck:
-      test: ["CMD", "python", "-c", "import http.client; conn=http.client.HTTPConnection('127.0.0.1', 8000, timeout=3); conn.request('GET', '/v1/capabilities'); resp=conn.getresponse(); raise SystemExit(0 if resp.status == 200 else 1)"]
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s

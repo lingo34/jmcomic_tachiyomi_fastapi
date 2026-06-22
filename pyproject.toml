@@ -1,26 +1,32 @@
 [project]
 name = "jmcomic-fastapi"
-version = "0.1.0"
+version = "0.2.0"
 description = "JMComic-backed FastAPI server for the Tachiyomi Remote API extension"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.124.0",
-    "uvicorn[standard]>=0.38.0",
-    "jmcomic>=2.6.17",
-]
-
-[project.optional-dependencies]
-dev = [
-    "mypy>=1.11",
-    "ruff>=0.6",
-    "pytest>=8.3",
-    "httpx>=0.27",
+    "fastapi>=0.138.0",
+    "uvicorn[standard]>=0.49.0",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.7",
+    "pillow>=12.2",
+    "jmcomic>=2.7.0",
 ]
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.51",
+    "ruff>=0.6",
+    "pytest>=8.3",
+    "httpx2>=2.4",
+]
 
 [tool.ruff]
 target-version = "py311"
@@ -28,34 +34,24 @@ line-length = 100
 extend-exclude = ["docs/**"]
 
 [tool.ruff.lint]
-select = ["E", "F", "B", "I", "UP", "C4", "RUF"]
+select = ["E", "F", "B", "I", "UP", "C4", "RUF", "S"]
 ignore = ["E501", "UP046", "UP047"]
 
 [tool.ruff.lint.per-file-ignores]
-"main.py" = ["B008"]
+"app/routes/*.py" = ["B008"]
+"app/dependencies.py" = ["B008"]
+"tests/**" = ["S101"]
 
-[tool.mypy]
-python_version = "3.13"
-strict = true
-warn_unused_configs = true
-warn_unreachable = true
-show_error_codes = true
-pretty = true
+[tool.ty.environment]
+python-version = "3.14"
 
-[[tool.mypy.overrides]]
-module = ["jmcomic"]
-ignore_missing_imports = true
+[tool.ty.rules]
+# jmcomic ships no type information; ty infers from its source where possible
+# and treats the rest as `Unknown` rather than erroring.
+redundant-cast = "error"
 
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
 filterwarnings = ["error"]
 pythonpath = ["."]
-
-[dependency-groups]
-dev = [
-    "mypy>=1.11",
-    "ruff>=0.6",
-    "pytest>=8.3",
-    "httpx>=0.27",
-]

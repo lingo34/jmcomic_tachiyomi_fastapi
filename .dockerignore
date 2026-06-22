@@ -13,13 +13,18 @@ dist/
 
 # Version control & docker meta
 .git/
+.github/
 .gitignore
 .dockerignore
+.editorconfig
 Dockerfile
+docker-compose.yml
 
 # Secrets / local config
 .env
 .env.*
+.env.example
 
-# Docs (not needed in a runtime image)
-*.md
+# Tests & docs (not needed in a runtime image; README is kept for build metadata)
+tests/
+docs/
