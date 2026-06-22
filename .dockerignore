@@ -1,0 +1,25 @@
+# Local virtualenv (must be excluded so it never overwrites the built one)
+.venv/
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Version control & docker meta
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+
+# Secrets / local config
+.env
+.env.*
+
+# Docs (not needed in a runtime image)
+*.md

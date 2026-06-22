@@ -1,13 +1,54 @@
-# syntax=docker/dockerfile:1.7
-FROM python:3.13-slim AS base
+# syntax=docker/dockerfile:1
+
+############################
+# Builder stage
+############################
+FROM python:3.14-slim AS builder
+
+# Pinned uv from the official distroless image
 COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0
+
+WORKDIR /app
+
+# 1) Install third-party dependencies only (best layer caching).
+#    The lock + manifest are bind-mounted so they never bloat this layer,
+#    and the uv download cache is reused across builds.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project --no-dev
+
+# 2) Copy the source and install the project itself into the venv.
+COPY . /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev
+
+
+############################
+# Runtime stage
+############################
+FROM python:3.14-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    APP_HOME=/app
+    PATH="/app/.venv/bin:$PATH"
 
-WORKDIR ${APP_HOME}
-COPY uv.lock pyproject.toml ./
-RUN uv sync --frozen --no-install-project --no-dev -v
+# Non-root user
+RUN groupadd -r app && useradd --no-log-init -r -g app app
+
+WORKDIR /app
+
+# Bring over the virtualenv + app code, owned by the non-root user.
+# Same base image as the builder, so the venv's interpreter paths stay valid.
+COPY --from=builder --chown=app:app /app /app
+
+USER app
+
+EXPOSE 8000
+
+# uvicorn lives in /app/.venv/bin (already on PATH) — no uv needed at runtime.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
