@@ -9,11 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR ${APP_HOME}
 
-# Install uv (static binary)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --install-dir /usr/local/bin
+# Install uv via pip to avoid network resolution issues
+RUN pip install uv
 
 # Create runtime venv and non-root user
 RUN python -m venv /opt/venv \
