@@ -1,9 +1,0 @@
-README.md
-main.py
-pyproject.toml
-jmcomic_fastapi.egg-info/PKG-INFO
-jmcomic_fastapi.egg-info/SOURCES.txt
-jmcomic_fastapi.egg-info/dependency_links.txt
-jmcomic_fastapi.egg-info/requires.txt
-jmcomic_fastapi.egg-info/top_level.txt
-tests/test_main.py
